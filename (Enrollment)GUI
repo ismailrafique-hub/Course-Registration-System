@@ -1,0 +1,630 @@
+import javax.swing.*;
+import javax.swing.event.ListSelectionEvent;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.sql.*;
+
+/**
+ * Course Enrollment System - Swing + SQL Server
+ *
+ * Tables expected:
+ *  Teachers(teacher_id INT PK, teacher_name VARCHAR(50) NOT NULL)
+ *  Students(student_id INT PK, student_name VARCHAR(50) NOT NULL, age INT)
+ *  Courses(course_id INT PK IDENTITY(1,1), course_name VARCHAR(100) NOT NULL, teacher_id INT NULL FK->Teachers)
+ *  Course_Student(course_id INT NOT NULL, student_id INT NOT NULL, grade VARCHAR(5),
+ *                 PRIMARY KEY(course_id, student_id),
+ *                 FK->Courses(course_id), FK->Students(student_id))
+ */
+public class JavaApplication1 extends JFrame {
+
+    // ====== EDIT THESE IF NEEDED ======
+    private static final String SERVER = "localhost";
+    private static final String PORT   = "1433";
+    private static final String DBNAME = "Students";
+    private static final String USER   = "sa";
+    private static final String PASS   = "123";
+    private static final String JDBC_URL =
+            "jdbc:sqlserver://" + SERVER + ":" + PORT + ";" +
+            "databaseName=" + DBNAME + ";" +
+            "encrypt=true;trustServerCertificate=true;";
+
+    // ===== UI components =====
+    private final JTabbedPane tabs = new JTabbedPane();
+
+    // Admin
+    private DefaultTableModel adminCoursesModel;
+    private JTable adminCoursesTable;
+    private DefaultTableModel adminEnrolledModel; // NEW: enrolled students table
+    private JTable adminEnrolledTable;            // NEW
+    private JTextField txtAdminCourseName;
+    private JTextField txtAdminDeleteId;
+
+    // Teacher
+    private DefaultTableModel teacherModel;
+    private JTable teacherTable;
+    private JTextField txtTeacherId;
+    private JTextField txtTeacherName;
+
+    // Student
+    private DefaultTableModel studentModel;
+    private JTable studentTable;
+    private JTextField txtStudentId;
+    private JTextField txtStudentName;
+    private JTextField txtStudentAge;
+
+    public JavaApplication1() {
+        super("Course Enrollment System (Swing + SQL Server)");
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setSize(1050, 650);
+        setLocationRelativeTo(null);
+
+        // Ensure driver (ok if it fails silently and driver autoloads)
+        try { Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver"); } catch (Throwable ignored) {}
+
+        setLayout(new BorderLayout());
+        add(buildTopBar(), BorderLayout.NORTH);
+        buildAdminTab();
+        buildTeacherTab();
+        buildStudentTab();
+        add(tabs, BorderLayout.CENTER);
+
+        // Initial loads
+        refreshAdmin();
+        refreshTeacher();
+        refreshStudent();
+    }
+
+    private JComponent buildTopBar() {
+        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JButton btnReset = new JButton("Create / Reset Tables");
+        JButton btnAbout = new JButton("About");
+        bar.add(btnReset);
+        bar.add(btnAbout);
+
+        btnReset.addActionListener(e -> {
+            if (JOptionPane.showConfirmDialog(this,
+                    "This will DROP & recreate tables. Continue?",
+                    "Confirm", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+                try {
+                    createTables();
+                    JOptionPane.showMessageDialog(this, "Tables created successfully.");
+                    refreshAll();
+                } catch (SQLException ex) {
+                    showSqlError(ex);
+                }
+            }
+        });
+
+        btnAbout.addActionListener(e ->
+                JOptionPane.showMessageDialog(this,
+                        "Course Enrollment System\nSwing + SQL Server\nAdmin / Teacher / Student portals",
+                        "About", JOptionPane.INFORMATION_MESSAGE));
+
+        return bar;
+    }
+
+    // ==================== ADMIN TAB ====================
+    private void buildAdminTab() {
+        JPanel root = new JPanel(new BorderLayout(10, 10));
+        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        // Top: Courses table
+        adminCoursesModel = new DefaultTableModel(new String[]{"Course ID", "Course Name", "Teacher"}, 0) {
+            public boolean isCellEditable(int r, int c) { return false; }
+        };
+        adminCoursesTable = new JTable(adminCoursesModel);
+        JScrollPane spCourses = new JScrollPane(adminCoursesTable);
+
+        // Bottom: Enrolled students table (NEW)
+        adminEnrolledModel = new DefaultTableModel(new String[]{"Student ID", "Student Name", "Age"}, 0) {
+            public boolean isCellEditable(int r, int c) { return false; }
+        };
+        adminEnrolledTable = new JTable(adminEnrolledModel);
+        JScrollPane spEnrolled = new JScrollPane(adminEnrolledTable);
+
+        // Split pane to show both
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, spCourses, spEnrolled);
+        split.setResizeWeight(0.6); // more space to courses
+        root.add(split, BorderLayout.CENTER);
+
+        // Actions panel
+        JPanel actions = new JPanel(new GridBagLayout());
+        actions.setBorder(BorderFactory.createTitledBorder("Admin Actions"));
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.insets = new Insets(6, 6, 6, 6);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+
+        // Admin password before enabling actions
+        JButton btnLogin = new JButton("Admin Login");
+        JPasswordField pwd = new JPasswordField(10);
+
+        gc.gridx = 0; gc.gridy = 0; actions.add(new JLabel("Password:"), gc);
+        gc.gridx = 1; actions.add(pwd, gc);
+        gc.gridx = 2; actions.add(btnLogin, gc);
+
+        // Add course
+        txtAdminCourseName = new JTextField(20);
+        JButton btnAdd = new JButton("Add Course");
+        txtAdminCourseName.setEnabled(false);
+        btnAdd.setEnabled(false);
+
+        gc.gridx = 0; gc.gridy = 1; actions.add(new JLabel("Course Name:"), gc);
+        gc.gridx = 1; actions.add(txtAdminCourseName, gc);
+        gc.gridx = 2; actions.add(btnAdd, gc);
+
+        // Delete course
+        txtAdminDeleteId = new JTextField(8);
+        JButton btnDelete = new JButton("Delete Course");
+        txtAdminDeleteId.setEnabled(false);
+        btnDelete.setEnabled(false);
+
+        gc.gridx = 0; gc.gridy = 2; actions.add(new JLabel("Delete Course ID:"), gc);
+        gc.gridx = 1; actions.add(txtAdminDeleteId, gc);
+        gc.gridx = 2; actions.add(btnDelete, gc);
+
+        // Refresh
+        JButton btnRefresh = new JButton("Refresh");
+        gc.gridx = 2; gc.gridy = 3; actions.add(btnRefresh, gc);
+
+        root.add(actions, BorderLayout.SOUTH);
+
+        // Listeners
+        btnLogin.addActionListener(e -> {
+            String pass = String.valueOf(pwd.getPassword());
+            if ("2244".equals(pass)) {
+                txtAdminCourseName.setEnabled(true);
+                btnAdd.setEnabled(true);
+                txtAdminDeleteId.setEnabled(true);
+                btnDelete.setEnabled(true);
+                JOptionPane.showMessageDialog(this, "Admin login successful.");
+            } else {
+                JOptionPane.showMessageDialog(this, "Incorrect password.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        btnAdd.addActionListener(e -> {
+            String name = txtAdminCourseName.getText().trim();
+            if (name.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Course name required.", "Validation", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            try (Connection c = getConn();
+                 PreparedStatement ps = c.prepareStatement("INSERT INTO Courses(course_name, teacher_id) VALUES(?, NULL)")) {
+                ps.setString(1, name);
+                ps.executeUpdate();
+                txtAdminCourseName.setText("");
+                refreshAdmin();
+                JOptionPane.showMessageDialog(this, "Course added.");
+            } catch (SQLException ex) { showSqlError(ex); }
+        });
+
+        btnDelete.addActionListener(e -> {
+            String idStr = txtAdminDeleteId.getText().trim();
+            if (idStr.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Course ID required.", "Validation", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            try {
+                int id = Integer.parseInt(idStr);
+                try (Connection c = getConn()) {
+                    try (PreparedStatement delEnroll =
+                                 c.prepareStatement("DELETE FROM Course_Student WHERE course_id = ?")) {
+                        delEnroll.setInt(1, id);
+                        delEnroll.executeUpdate();
+                    }
+                    try (PreparedStatement delCourse =
+                                 c.prepareStatement("DELETE FROM Courses WHERE course_id = ?")) {
+                        delCourse.setInt(1, id);
+                        int rows = delCourse.executeUpdate();
+                        if (rows > 0) {
+                            JOptionPane.showMessageDialog(this, "Course deleted.");
+                        } else {
+                            JOptionPane.showMessageDialog(this, "Course ID not found.", "Info",
+                                    JOptionPane.INFORMATION_MESSAGE);
+                        }
+                    }
+                }
+                txtAdminDeleteId.setText("");
+                refreshAdmin();
+                // also clear enrolled table
+                adminEnrolledModel.setRowCount(0);
+            } catch (NumberFormatException nfe) {
+                JOptionPane.showMessageDialog(this, "Course ID must be a number.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+            } catch (SQLException ex) { showSqlError(ex); }
+        });
+
+        btnRefresh.addActionListener(e -> refreshAdmin());
+
+        // When admin selects a course, load its enrolled students (NEW)
+        adminCoursesTable.getSelectionModel().addListSelectionListener((ListSelectionEvent e) -> {
+            if (!e.getValueIsAdjusting()) {
+                int row = adminCoursesTable.getSelectedRow();
+                if (row >= 0) {
+                    int courseId = (int) adminCoursesModel.getValueAt(row, 0);
+                    loadEnrolledStudentsForAdmin(courseId);
+                }
+            }
+        });
+
+        tabs.addTab("Admin", root);
+    }
+
+    // ==================== TEACHER TAB ====================
+    private void buildTeacherTab() {
+        JPanel root = new JPanel(new BorderLayout(10, 10));
+        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        teacherModel = new DefaultTableModel(new String[]{"Course ID", "Course Name"}, 0) {
+            public boolean isCellEditable(int r, int c) { return false; }
+        };
+        teacherTable = new JTable(teacherModel);
+        root.add(new JScrollPane(teacherTable), BorderLayout.CENTER);
+
+        JPanel bottom = new JPanel(new GridBagLayout());
+        bottom.setBorder(BorderFactory.createTitledBorder("Teacher Actions"));
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.insets = new Insets(6, 6, 6, 6);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+
+        txtTeacherId = new JTextField(10);
+        txtTeacherName = new JTextField(18);
+        JButton btnEnsure = new JButton("Save/Ensure Teacher");
+        JButton btnAssign = new JButton("Assign Selected Course");
+        JButton btnRefresh = new JButton("Refresh");
+
+        gc.gridx = 0; gc.gridy = 0; bottom.add(new JLabel("Teacher ID:"), gc);
+        gc.gridx = 1; bottom.add(txtTeacherId, gc);
+        gc.gridx = 0; gc.gridy = 1; bottom.add(new JLabel("Teacher Name:"), gc);
+        gc.gridx = 1; bottom.add(txtTeacherName, gc);
+        gc.gridx = 0; gc.gridy = 2; bottom.add(btnEnsure, gc);
+        gc.gridx = 1; bottom.add(btnAssign, gc);
+        gc.gridx = 2; bottom.add(btnRefresh, gc);
+
+        root.add(bottom, BorderLayout.SOUTH);
+
+        btnEnsure.addActionListener(e -> {
+            String idS = txtTeacherId.getText().trim();
+            String name = txtTeacherName.getText().trim();
+            if (idS.isEmpty() || name.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Enter Teacher ID and Name.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            try (Connection c = getConn()) {
+                int id = Integer.parseInt(idS);
+                try (PreparedStatement ps = c.prepareStatement(
+                        "IF NOT EXISTS (SELECT 1 FROM Teachers WHERE teacher_id = ?) " +
+                                "INSERT INTO Teachers(teacher_id, teacher_name) VALUES(?, ?)")) {
+                    ps.setInt(1, id);
+                    ps.setInt(2, id);
+                    ps.setString(3, name);
+                    ps.executeUpdate();
+                }
+                JOptionPane.showMessageDialog(this, "Teacher saved/confirmed.");
+            } catch (NumberFormatException n) {
+                JOptionPane.showMessageDialog(this, "Teacher ID must be a number.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+            } catch (SQLException ex) { showSqlError(ex); }
+        });
+
+        btnAssign.addActionListener(e -> {
+            int row = teacherTable.getSelectedRow();
+            if (row < 0) {
+                JOptionPane.showMessageDialog(this, "Select a course to assign.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            String idS = txtTeacherId.getText().trim();
+            String name = txtTeacherName.getText().trim();
+            if (idS.isEmpty() || name.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Enter Teacher ID & Name first.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            try (Connection c = getConn()) {
+                int teacherId = Integer.parseInt(idS);
+
+                // ensure teacher exists
+                try (PreparedStatement ps = c.prepareStatement(
+                        "IF NOT EXISTS (SELECT 1 FROM Teachers WHERE teacher_id = ?) " +
+                                "INSERT INTO Teachers(teacher_id, teacher_name) VALUES(?, ?)")) {
+                    ps.setInt(1, teacherId);
+                    ps.setInt(2, teacherId);
+                    ps.setString(3, name);
+                    ps.executeUpdate();
+                }
+
+                int courseId = (int) teacherModel.getValueAt(row, 0);
+                try (PreparedStatement upd = c.prepareStatement(
+                        "UPDATE Courses SET teacher_id = ? WHERE course_id = ? AND teacher_id IS NULL")) {
+                    upd.setInt(1, teacherId);
+                    upd.setInt(2, courseId);
+                    int rows = upd.executeUpdate();
+                    if (rows > 0) {
+                        JOptionPane.showMessageDialog(this, "Assigned! You now teach course " + courseId);
+                    } else {
+                        JOptionPane.showMessageDialog(this, "Course already has a teacher or not found.",
+                                "Info", JOptionPane.INFORMATION_MESSAGE);
+                    }
+                }
+                refreshTeacher();
+                refreshAdmin();   // keep admin view in sync
+                refreshStudent(); // keep student view in sync
+            } catch (NumberFormatException n) {
+                JOptionPane.showMessageDialog(this, "Teacher ID must be a number.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+            } catch (SQLException ex) { showSqlError(ex); }
+        });
+
+        btnRefresh.addActionListener(e -> refreshTeacher());
+
+        tabs.addTab("Teacher", root);
+    }
+
+    // ==================== STUDENT TAB ====================
+    private void buildStudentTab() {
+        JPanel root = new JPanel(new BorderLayout(10, 10));
+        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        studentModel = new DefaultTableModel(new String[]{"Course ID", "Course Name", "Teacher"}, 0) {
+            public boolean isCellEditable(int r, int c) { return false; }
+        };
+        studentTable = new JTable(studentModel);
+        root.add(new JScrollPane(studentTable), BorderLayout.CENTER);
+
+        JPanel bottom = new JPanel(new GridBagLayout());
+        bottom.setBorder(BorderFactory.createTitledBorder("Student Actions"));
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.insets = new Insets(6, 6, 6, 6);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+
+        txtStudentId = new JTextField(10);
+        txtStudentName = new JTextField(18);
+        txtStudentAge = new JTextField(6);
+
+        JButton btnEnsure = new JButton("Save/Ensure Student");
+        JButton btnEnroll = new JButton("Enroll Selected Course");
+        JButton btnRefresh = new JButton("Refresh");
+
+        gc.gridx = 0; gc.gridy = 0; bottom.add(new JLabel("Student ID:"), gc);
+        gc.gridx = 1; bottom.add(txtStudentId, gc);
+        gc.gridx = 0; gc.gridy = 1; bottom.add(new JLabel("Student Name:"), gc);
+        gc.gridx = 1; bottom.add(txtStudentName, gc);
+        gc.gridx = 0; gc.gridy = 2; bottom.add(new JLabel("Student Age:"), gc);
+        gc.gridx = 1; bottom.add(txtStudentAge, gc);
+        gc.gridx = 0; gc.gridy = 3; bottom.add(btnEnsure, gc);
+        gc.gridx = 1; bottom.add(btnEnroll, gc);
+        gc.gridx = 2; bottom.add(btnRefresh, gc);
+
+        root.add(bottom, BorderLayout.SOUTH);
+
+        btnEnsure.addActionListener(e -> {
+            String idS = txtStudentId.getText().trim();
+            String name = txtStudentName.getText().trim();
+            String ageS = txtStudentAge.getText().trim();
+            if (idS.isEmpty() || name.isEmpty() || ageS.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Enter Student ID, Name, and Age.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            try (Connection c = getConn()) {
+                int id = Integer.parseInt(idS);
+                int age = Integer.parseInt(ageS);
+                try (PreparedStatement ps = c.prepareStatement(
+                        "IF NOT EXISTS (SELECT 1 FROM Students WHERE student_id = ?) " +
+                                "INSERT INTO Students(student_id, student_name, age) VALUES(?, ?, ?)")) {
+                    ps.setInt(1, id);
+                    ps.setInt(2, id);
+                    ps.setString(3, name);
+                    ps.setInt(4, age);
+                    ps.executeUpdate();
+                }
+                JOptionPane.showMessageDialog(this, "Student saved/confirmed.");
+            } catch (NumberFormatException n) {
+                JOptionPane.showMessageDialog(this, "IDs and age must be numbers.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+            } catch (SQLException ex) { showSqlError(ex); }
+        });
+
+        btnEnroll.addActionListener(e -> {
+            int row = studentTable.getSelectedRow();
+            if (row < 0) {
+                JOptionPane.showMessageDialog(this, "Select a course to enroll.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            String idS = txtStudentId.getText().trim();
+            if (idS.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Enter Student ID & click 'Save/Ensure Student' first.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            try (Connection c = getConn()) {
+                int studentId = Integer.parseInt(idS);
+                int courseId = (int) studentModel.getValueAt(row, 0);
+
+                // ensure student exists
+                try (PreparedStatement chk = c.prepareStatement("SELECT 1 FROM Students WHERE student_id = ?")) {
+                    chk.setInt(1, studentId);
+                    try (ResultSet rs = chk.executeQuery()) {
+                        if (!rs.next()) {
+                            JOptionPane.showMessageDialog(this, "Student not found. Save student first.",
+                                    "Info", JOptionPane.INFORMATION_MESSAGE);
+                            return;
+                        }
+                    }
+                }
+
+                // enroll (skip duplicates)
+                try (PreparedStatement ins = c.prepareStatement(
+                        "IF NOT EXISTS (SELECT 1 FROM Course_Student WHERE course_id = ? AND student_id = ?) " +
+                                "INSERT INTO Course_Student(course_id, student_id) VALUES(?, ?)")) {
+                    ins.setInt(1, courseId);
+                    ins.setInt(2, studentId);
+                    ins.setInt(3, courseId);
+                    ins.setInt(4, studentId);
+                    ins.executeUpdate();
+                }
+                JOptionPane.showMessageDialog(this, "Enrolled in course " + courseId + ".");
+                // Keep Admin enrolled view in sync if same course is selected there
+                trySyncAdminEnrolledIfSameCourse(courseId);
+            } catch (NumberFormatException n) {
+                JOptionPane.showMessageDialog(this, "Student ID must be a number.", "Validation",
+                        JOptionPane.WARNING_MESSAGE);
+            } catch (SQLException ex) { showSqlError(ex); }
+        });
+
+        btnRefresh.addActionListener(e -> refreshStudent());
+
+        tabs.addTab("Student", root);
+    }
+
+    // ==================== REFRESH & LOAD HELPERS ====================
+    private void refreshAdmin() {
+        adminCoursesModel.setRowCount(0);
+        adminEnrolledModel.setRowCount(0); // clear enrolled list until a course is clicked
+        final String sql =
+                "SELECT c.course_id, c.course_name, t.teacher_name " +
+                "FROM Courses c LEFT JOIN Teachers t ON c.teacher_id = t.teacher_id " +
+                "ORDER BY c.course_id";
+        try (Connection c = getConn();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                adminCoursesModel.addRow(new Object[]{
+                        rs.getInt("course_id"),
+                        rs.getString("course_name"),
+                        rs.getString("teacher_name") == null ? "Unassigned" : rs.getString("teacher_name")
+                });
+            }
+        } catch (SQLException ex) { showSqlError(ex); }
+    }
+
+    private void loadEnrolledStudentsForAdmin(int courseId) {
+        adminEnrolledModel.setRowCount(0);
+        final String sql =
+                "SELECT s.student_id, s.student_name, s.age " +
+                "FROM Course_Student cs " +
+                "JOIN Students s ON s.student_id = cs.student_id " +
+                "WHERE cs.course_id = ? " +
+                "ORDER BY s.student_id";
+        try (Connection c = getConn();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, courseId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    adminEnrolledModel.addRow(new Object[]{
+                            rs.getInt("student_id"),
+                            rs.getString("student_name"),
+                            rs.getInt("age")
+                    });
+                }
+            }
+        } catch (SQLException ex) { showSqlError(ex); }
+    }
+
+    private void trySyncAdminEnrolledIfSameCourse(int courseIdJustChanged) {
+        int row = adminCoursesTable.getSelectedRow();
+        if (row >= 0) {
+            int selectedCourseId = (int) adminCoursesModel.getValueAt(row, 0);
+            if (selectedCourseId == courseIdJustChanged) {
+                loadEnrolledStudentsForAdmin(selectedCourseId);
+            }
+        }
+        // also refresh the courses list in case counts/teachers changed
+        refreshAdmin();
+    }
+
+    private void refreshTeacher() {
+        teacherModel.setRowCount(0);
+        final String sql = "SELECT course_id, course_name FROM Courses WHERE teacher_id IS NULL ORDER BY course_id";
+        try (Connection c = getConn();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                teacherModel.addRow(new Object[]{rs.getInt("course_id"), rs.getString("course_name")});
+            }
+        } catch (SQLException ex) { showSqlError(ex); }
+    }
+
+    private void refreshStudent() {
+        studentModel.setRowCount(0);
+        final String sql =
+                "SELECT c.course_id, c.course_name, t.teacher_name " +
+                "FROM Courses c JOIN Teachers t ON c.teacher_id = t.teacher_id " +
+                "ORDER BY c.course_id";
+        try (Connection c = getConn();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                studentModel.addRow(new Object[]{
+                        rs.getInt("course_id"),
+                        rs.getString("course_name"),
+                        rs.getString("teacher_name")
+                });
+            }
+        } catch (SQLException ex) { showSqlError(ex); }
+    }
+
+    private void refreshAll() {
+        refreshAdmin();
+        refreshTeacher();
+        refreshStudent();
+    }
+
+    // ==================== DB HELPERS ====================
+    private Connection getConn() throws SQLException {
+        return DriverManager.getConnection(JDBC_URL, USER, PASS);
+    }
+
+    private void createTables() throws SQLException {
+        try (Connection conn = getConn(); Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate("IF OBJECT_ID('Course_Student', 'U') IS NOT NULL DROP TABLE Course_Student");
+            stmt.executeUpdate("IF OBJECT_ID('Courses', 'U') IS NOT NULL DROP TABLE Courses");
+            stmt.executeUpdate("IF OBJECT_ID('Students', 'U') IS NOT NULL DROP TABLE Students");
+            stmt.executeUpdate("IF OBJECT_ID('Teachers', 'U') IS NOT NULL DROP TABLE Teachers");
+
+            stmt.executeUpdate(
+                    "CREATE TABLE Teachers (" +
+                    "  teacher_id INT PRIMARY KEY, " +
+                    "  teacher_name VARCHAR(50) NOT NULL)"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE Students (" +
+                    "  student_id INT PRIMARY KEY, " +
+                    "  student_name VARCHAR(50) NOT NULL, " +
+                    "  age INT)"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE Courses (" +
+                    "  course_id INT PRIMARY KEY IDENTITY(1,1), " +
+                    "  course_name VARCHAR(100) NOT NULL, " +
+                    "  teacher_id INT NULL, " +
+                    "  FOREIGN KEY (teacher_id) REFERENCES Teachers(teacher_id))"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE Course_Student (" +
+                    "  course_id INT NOT NULL, " +
+                    "  student_id INT NOT NULL, " +
+                    "  grade VARCHAR(5), " +
+                    "  PRIMARY KEY (course_id, student_id), " +
+                    "  FOREIGN KEY (course_id) REFERENCES Courses(course_id), " +
+                    "  FOREIGN KEY (student_id) REFERENCES Students(student_id))"
+            );
+        }
+    }
+
+    private void showSqlError(SQLException ex) {
+        ex.printStackTrace();
+        JOptionPane.showMessageDialog(this, ex.getMessage(), "SQL Error", JOptionPane.ERROR_MESSAGE);
+    }
+
+    // ==================== MAIN ====================
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            JavaApplication1 app = new JavaApplication1();
+            app.setVisible(true);
+        });
+    }
+}
